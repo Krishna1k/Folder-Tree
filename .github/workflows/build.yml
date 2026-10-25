@@ -10,6 +10,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+      - name: Cache Build Files
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+            ~/.gradle
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-
       - name: Install System Packages
         run: |
           sudo apt-get update
@@ -22,5 +32,5 @@ jobs:
         run: buildozer -v android debug
       - uses: actions/upload-artifact@v4
         with:
-          name: photomap-apk
+          name: persist-apk
           path: bin/*.apk
