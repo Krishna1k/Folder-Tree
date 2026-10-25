@@ -1,4 +1,4 @@
-import re, json, time, shutil, zipfile, hashlib, threading
+import re, os, json, time, shutil, zipfile, hashlib, threading, traceback
 from pathlib import Path
 
 from kivy.app import App
@@ -125,7 +125,6 @@ def do_extract(zpath, mpath, log, status):
                 shutil.copy2(first, t)
             if mt:
                 try:
-                    import os
                     os.utime(t, (mt, mt))
                 except Exception:
                     pass
@@ -239,7 +238,7 @@ class PhotoMapApp(App):
         return root
 
     def on_start(self):
-        ask_access()
+        Clock.schedule_once(lambda dt: ask_access(), 1)
         try:
             from jnius import autoclass
             from android.runnable import run_on_ui_thread
@@ -253,6 +252,12 @@ class PhotoMapApp(App):
         except Exception:
             pass
 
+    def on_pause(self):
+        return True
+
+    def on_resume(self):
+        pass
+
     def log(self, msg):
         def f(dt):
             self.lines.append(msg)
@@ -264,7 +269,7 @@ class PhotoMapApp(App):
 
     def ask_scan(self):
         if not self.busy:
-            Picker("dir", ROOT, lambda p: self.run(do_scan, p)).open()
+            Picker("dir", ROOT, lambda p: self.run_job(do_scan, p)).open()
 
     def ask_extract(self):
         if self.busy:
@@ -276,9 +281,9 @@ class PhotoMapApp(App):
             self.log("No database yet. Scan a folder first.")
             return
         Picker(".json", BK,
-               lambda m: self.run(do_extract, z, m)).open()
+               lambda m: self.run_job(do_extract, z, m)).open()
 
-    def run(self, fn, *args):
+    def run_job(self, fn, *args):
         self.busy = True
 
         def work():
@@ -292,4 +297,22 @@ class PhotoMapApp(App):
         threading.Thread(target=work, daemon=True).start()
 
 
-PhotoMapApp().run()
+class ErrApp(App):
+    err = ""
+
+    def build(self):
+        sv = ScrollView()
+        lb = Label(text=self.err, size_hint_y=None, font_size="12sp",
+                   halign="left", valign="top")
+        lb.bind(width=lambda *a: setattr(lb, "text_size", (lb.width, None)),
+                texture_size=lambda *a: setattr(lb, "height",
+                                                lb.texture_size[1]))
+        sv.add_widget(lb)
+        return sv
+
+
+try:
+    PhotoMapApp().run()
+except Exception:
+    ErrApp.err = traceback.format_exc()
+    ErrApp().run()
