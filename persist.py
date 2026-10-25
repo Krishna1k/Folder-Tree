@@ -565,7 +565,8 @@ def do_extract(app, zpath, dbpath, out_dir):
 
 # ------------------------------------------------------------------- UI
 def wlabel(text="", **kw):
-    lb = MDLabel(text=text, size_hint_y=None, halign="left", **kw)
+    kw.setdefault("halign", "left")
+    lb = MDLabel(text=text, size_hint_y=None, **kw)
     lb.bind(width=lambda *a: setattr(lb, "text_size", (lb.width, None)),
             texture_size=lambda *a: setattr(
                 lb, "height", max(dp(24), lb.texture_size[1])))
@@ -817,9 +818,14 @@ class PersistApp(MDApp):
     def switch_row(self, text, key):
         row = MDBoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
         row.add_widget(MDLabel(text=text, valign="middle"))
-        sw = MDSwitch(active=bool(self.cfg.get(key, True)),
-                      size_hint=(None, None), pos_hint={"center_y": 0.5})
-        sw.bind(active=lambda inst, v: self.set_cfg(key, bool(v)))
+        sw = MDSwitch(pos_hint={"center_y": 0.5})
+        init_val = bool(self.cfg.get(key, True))
+
+        def _init_sw(dt):
+            sw.active = init_val
+            sw.bind(active=lambda inst, v: self.set_cfg(key, bool(v)))
+
+        Clock.schedule_once(_init_sw, 0)
         row.add_widget(sw)
         return row
 
