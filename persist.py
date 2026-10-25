@@ -29,11 +29,6 @@ from kivymd.uix.slider import MDSlider
 from kivymd.uix.textfield import MDTextField
 from kivymd.uix.toolbar import MDTopAppBar
 
-try:
-    from kivymd.uix.transition import MDFadeSlideTransition
-except Exception:
-    MDFadeSlideTransition = None
-
 ROOT = Path("/storage/emulated/0")
 PIN = "\U0001F4CC"
 DATE_FMT = "%d-%b-%Y %H:%M:%S"
@@ -249,20 +244,8 @@ def set_hi_refresh():
             try:
                 win = act.getWindow()
                 lp = win.getAttributes()
-                disp_ = act.getWindowManager().getDefaultDisplay()
-                cur = disp_.getMode()
-                best = None
-                for m in disp_.getSupportedModes():
-                    if (m.getPhysicalWidth() != cur.getPhysicalWidth()
-                            or m.getPhysicalHeight()
-                            != cur.getPhysicalHeight()):
-                        continue
-                    if best is None or m.getRefreshRate() > best.getRefreshRate():
-                        best = m
-                if best is not None:
-                    lp.preferredDisplayModeId = best.getModeId()
-                    lp.preferredRefreshRate = float(best.getRefreshRate())
-                    win.setAttributes(lp)
+                lp.preferredRefreshRate = 120.0
+                win.setAttributes(lp)
             except Exception:
                 pass
         go()
@@ -272,8 +255,9 @@ def set_hi_refresh():
 
 def display_hz():
     try:
-        return int(round(_act().getWindowManager().getDefaultDisplay()
-                         .getRefreshRate()))
+        from jnius import cast
+        wm = cast("android.view.WindowManager", _act().getWindowManager())
+        return int(round(wm.getDefaultDisplay().getRefreshRate()))
     except Exception:
         return 0
 
@@ -838,6 +822,7 @@ class PersistApp(MDApp):
 
     # ---- build
     def build(self):
+        self._ui_ready = False
         self.cfg = self.load_cfg()
         self.busy = False
         self.lines = []
@@ -846,17 +831,13 @@ class PersistApp(MDApp):
         self._last_ui = 0.0
         self.cards, self.accent_labels, self.accent_icons = [], [], []
         self.toggles, self.swatches = [], {}
-        self.theme_cls.material_style = "M3"
         self.apply_theme(first=True)
-        try:
-            tr = MDFadeSlideTransition(duration=0.3)
-        except Exception:
-            tr = FadeTransition(duration=0.25)
-        self.sm = MDScreenManager(transition=tr)
+        self.sm = MDScreenManager(transition=FadeTransition(duration=0.22))
         self.home = self.build_home()
         self.settings = self.build_settings()
         self.sm.add_widget(self.home)
         self.sm.add_widget(self.settings)
+        self._ui_ready = True
         self.retheme()
         return self.sm
 
@@ -935,7 +916,7 @@ class PersistApp(MDApp):
                           else (0.1, 0.1, 0.12, 1))
 
     def retheme(self):
-        if not hasattr(self, "home"):
+        if not getattr(self, "_ui_ready", False):
             return
         for c in self.cards:
             c.md_bg_color = self.card_bg()
@@ -963,8 +944,8 @@ class PersistApp(MDApp):
     def icon(self, name, size="30sp"):
         ic = MDIcon(icon=name, theme_text_color="Custom",
                     text_color=self.theme_cls.primary_color,
-                    font_size=size, size_hint=(None, 1), width=dp(44),
-                    halign="center", valign="middle")
+                    pos_hint={"center_y": 0.5})
+        ic.font_size = size
         self.accent_icons.append(ic)
         return ic
 
@@ -980,8 +961,7 @@ class PersistApp(MDApp):
         card.add_widget(box)
         card.add_widget(MDIcon(icon="chevron-right",
                                theme_text_color="Hint",
-                               size_hint=(None, 1), width=dp(28),
-                               valign="middle"))
+                               pos_hint={"center_y": 0.5}))
         make_tap(card, cb)
         return card
 
@@ -1012,8 +992,7 @@ class PersistApp(MDApp):
         box.add_widget(self.db_home_lbl)
         db.add_widget(box)
         db.add_widget(MDIcon(icon="pencil-outline", theme_text_color="Hint",
-                             size_hint=(None, 1), width=dp(28),
-                             valign="middle"))
+                             pos_hint={"center_y": 0.5}))
         make_tap(db, lambda: self.choose_folder(
             "db_dir", "Choose Database Folder"))
 
@@ -1082,7 +1061,6 @@ class PersistApp(MDApp):
                 continue
             b = MDIconButton(icon="checkbox-blank-circle",
                              theme_text_color="Custom", text_color=col_rgba,
-                             user_font_size="40sp",
                              on_release=lambda w, n=name: self.set_palette(n))
             self.swatches[name] = b
             grid.add_widget(b)
@@ -1123,9 +1101,8 @@ class PersistApp(MDApp):
         row = MDBoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
         self.batt_icon = MDIcon(icon="check-circle", theme_text_color="Custom",
                                 text_color=(0.3, 0.78, 0.4, 1),
-                                font_size="30sp", size_hint=(None, 1),
-                                width=dp(40), halign="center",
-                                valign="middle")
+                                pos_hint={"center_y": 0.5})
+        self.batt_icon.font_size = "30sp"
         row.add_widget(self.batt_icon)
         self.batt_lbl = MDLabel(text="", font_style="Subtitle1",
                                 valign="middle")
@@ -1163,9 +1140,14 @@ class PersistApp(MDApp):
     def switch_row(self, text, key):
         row = MDBoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
         row.add_widget(MDLabel(text=text, valign="middle"))
-        sw = MDSwitch(active=bool(self.cfg.get(key, True)),
-                      size_hint=(None, None), pos_hint={"center_y": 0.5})
-        sw.bind(active=lambda inst, v: self.set_cfg(key, bool(v)))
+        sw = MDSwitch(pos_hint={"center_y": 0.5})
+        init_val = bool(self.cfg.get(key, True))
+
+        def _init_sw(dt):
+            sw.active = init_val
+            sw.bind(active=lambda inst, v: self.set_cfg(key, bool(v)))
+
+        Clock.schedule_once(_init_sw, 0)
         row.add_widget(sw)
         return row
 
@@ -1173,7 +1155,7 @@ class PersistApp(MDApp):
         self.sm.current = name
 
     def refresh_info(self):
-        if not hasattr(self, "swatches"):
+        if not getattr(self, "_ui_ready", False):
             return
         c = self.cfg
         n = os.cpu_count() or 2
@@ -1312,134 +1294,4 @@ class PersistApp(MDApp):
             p = None
         if p is None:
             Clock.schedule_once(lambda dt: self.set_status(
-                "Could Not Use That Location. Use The Built-In Browser."))
-        else:
-            Clock.schedule_once(lambda dt: cb(p))
-
-    # ---- dialogs
-    def battery_dialog(self):
-        dlg = None
-
-        def allow(*_):
-            request_battery_exemption()
-            dlg.dismiss()
-
-        def appset(*_):
-            open_app_settings()
-            dlg.dismiss()
-
-        dlg = MDDialog(
-            title="Keep Persist Running",
-            text=("Android Can Stop Persist When The Screen Is Off.\n\n"
-                  "1. Tap Allow Now And Choose Allow.\n"
-                  "2. Tap App Settings, Open Battery Saver And Pick "
-                  "No Restrictions.\n"
-                  "3. Turn On Autostart.\n"
-                  "4. Lock Persist In Recent Apps.\n\n"
-                  "This Popup Only Appears While The Restriction Is Active."),
-            buttons=[MDFlatButton(text="Later",
-                                  on_release=lambda *_: dlg.dismiss()),
-                     MDFlatButton(text="App Settings", on_release=appset),
-                     MDFlatButton(text="Allow Now", on_release=allow)])
-        dlg.open()
-
-    def choose_folder(self, key, title):
-        start = self.cfg.get(key) or ""
-        Picker("dir", Path(start) if start else ROOT, title,
-               lambda p: self.set_cfg(key, str(p))).open()
-
-    # ---- flows
-    def start_scan(self):
-        if self.busy:
-            self.set_status("A Job Is Already Running")
-            return
-
-        def go(db_dir):
-            Picker("dir", ROOT, "Pick The Folder To Scan",
-                   lambda p: self.run_job("Scan", do_scan, p, db_dir)).open()
-
-        cur = self.cfg.get("db_dir") or ""
-        if cur and Path(cur).is_dir():
-            go(Path(cur))
-            return
-
-        def picked(p):
-            self.set_cfg("db_dir", str(p))
-            go(p)
-        Picker("dir", ROOT, "Choose Where To Save Databases", picked).open()
-
-    def start_extract(self):
-        if self.busy:
-            self.set_status("A Job Is Already Running")
-            return
-
-        def got_zip(z):
-            dbd = self.cfg.get("db_dir")
-            start = Path(dbd) if dbd and Path(dbd).is_dir() else ROOT
-
-            def got_db(d):
-                self.pick_output(z, d)
-            Picker(".json", start, "Pick The Database", got_db).open()
-        Picker(".zip", ROOT, "Pick The Takeout Zip", got_zip).open()
-
-    def pick_output(self, z, d):
-        last = self.cfg.get("last_out") or ""
-        start = Path(last) if last and Path(last).is_dir() else ROOT
-
-        def got_out(o):
-            self.set_cfg("last_out", str(o))
-            self.confirm_extract(z, d, o)
-        Picker("dir", start, "Choose Output Folder For This Extraction",
-               got_out).open()
-
-    def confirm_extract(self, z, d, out):
-        dlg = None
-
-        def start(*_):
-            dlg.dismiss()
-            self.run_job("Extract", do_extract, z, d, out)
-
-        def change(*_):
-            dlg.dismiss()
-            self.pick_output(z, d)
-
-        dlg = MDDialog(
-            title="Start Extraction?",
-            text=("Zip: %s\nDatabase: %s\nOutput: %s\n\n"
-                  "Nothing Existing Is Overwritten." %
-                  (z.name, d.name, pretty(out))),
-            buttons=[MDFlatButton(text="Cancel",
-                                  on_release=lambda *_: dlg.dismiss()),
-                     MDFlatButton(text="Change Output", on_release=change),
-                     MDRaisedButton(text="Start", on_release=start)])
-        dlg.open()
-
-    def run_job(self, title, fn, *args):
-        if self.busy:
-            return
-        self.busy = True
-        self.lines = []
-        self.log_lbl.text = ""
-        self.hold_cpu(True)
-
-        def work():
-            lowprio()
-            ok, msg = True, ""
-            try:
-                msg = fn(self, *args)
-            except RuntimeError as e:
-                ok, msg = False, str(e)
-                self.log("ERROR: " + msg)
-            except Exception as e:
-                ok, msg = False, repr(e)
-                self.log("ERROR: " + traceback.format_exc()[-700:])
-            finally:
-                self.hold_cpu(False)
-                self.busy = False
-                self.set_status("Ready", 0)
-            if self.cfg.get("notify"):
-                notify("Persist - %s %s" %
-                       (title, "Finished" if ok else "Failed"), msg)
-            if self.cfg.get("vibrate"):
-                vibrate(ok)
-        threading.Thread(target=work, daemon=True).start()
+                "Could Not Use That Location. Use The Built-
