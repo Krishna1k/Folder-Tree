@@ -1,14 +1,14 @@
 [app]
-title = PhotoMap
-package.name = photomap
-package.domain = org.photomap
+title = Persist
+package.name = persist
+package.domain = org.persist
 source.dir = .
 source.include_exts = py
-version = 0.1
-requirements = python3,kivy==2.3.0,pyjnius,android
+version = 1.0
+requirements = python3,kivy==2.3.0,kivymd==1.2.0,pillow,pyjnius,android
 orientation = portrait
 fullscreen = 0
-android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
+android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE,POST_NOTIFICATIONS,VIBRATE,WAKE_LOCK,REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
 android.api = 33
 android.minapi = 24
 android.archs = arm64-v8a
