@@ -8,8 +8,10 @@ from kivy.animation import Animation
 from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.uix.gridlayout import GridLayout
+from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
 from kivy.uix.screenmanager import FadeTransition
+from kivy.uix.scrollview import ScrollView
 from kivy.utils import get_color_from_hex
 from kivymd.app import MDApp
 from kivymd.color_definitions import colors as MD_COLORS
@@ -29,7 +31,13 @@ from kivymd.uix.slider import MDSlider
 from kivymd.uix.textfield import MDTextField
 from kivymd.uix.toolbar import MDTopAppBar
 
+try:
+    from kivymd.uix.transition import MDFadeSlideTransition
+except Exception:
+    MDFadeSlideTransition = None
+
 ROOT = Path("/storage/emulated/0")
+CRASH_FILE = "/storage/emulated/0/Persist_crash.txt"
 PIN = "\U0001F4CC"
 DATE_FMT = "%d-%b-%Y %H:%M:%S"
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif",
@@ -42,6 +50,14 @@ PLACEHOLDER = "Results Will Appear Here After A Scan Or Extraction."
 
 
 # ---------------------------------------------------------------- helpers
+def save_crash(text):
+    try:
+        with open(CRASH_FILE, "a", encoding="utf-8") as f:
+            f.write(text + "\n----\n")
+    except Exception:
+        pass
+
+
 def fmt_ts(ts):
     try:
         return datetime.fromtimestamp(ts).strftime(DATE_FMT)
@@ -244,8 +260,21 @@ def set_hi_refresh():
             try:
                 win = act.getWindow()
                 lp = win.getAttributes()
-                lp.preferredRefreshRate = 120.0
-                win.setAttributes(lp)
+                disp_ = act.getWindowManager().getDefaultDisplay()
+                cur = disp_.getMode()
+                best = None
+                for m in disp_.getSupportedModes():
+                    if (m.getPhysicalWidth() != cur.getPhysicalWidth()
+                            or m.getPhysicalHeight()
+                            != cur.getPhysicalHeight()):
+                        continue
+                    if (best is None
+                            or m.getRefreshRate() > best.getRefreshRate()):
+                        best = m
+                if best is not None:
+                    lp.preferredDisplayModeId = best.getModeId()
+                    lp.preferredRefreshRate = float(best.getRefreshRate())
+                    win.setAttributes(lp)
             except Exception:
                 pass
         go()
@@ -255,9 +284,8 @@ def set_hi_refresh():
 
 def display_hz():
     try:
-        from jnius import cast
-        wm = cast("android.view.WindowManager", _act().getWindowManager())
-        return int(round(wm.getDefaultDisplay().getRefreshRate()))
+        return int(round(_act().getWindowManager().getDefaultDisplay()
+                         .getRefreshRate()))
     except Exception:
         return 0
 
@@ -805,13 +833,13 @@ class Picker(ModalView):
                 on_release=lambda w, n=name: self.go(self.cur / n))
             item.add_widget(IconLeftWidget(icon="folder"))
             self.items.add_widget(item)
-        icon = "zip-box" if self.mode == ".zip" else "code-json"
+        icon_name = "zip-box" if self.mode == ".zip" else "code-json"
         for name, size, mt in sorted(files, key=lambda x: x[0].lower()):
             item = TwoLineIconListItem(
                 text=name,
                 secondary_text="%s  |  %s" % (human(size), fmt_ts(mt)),
                 on_release=lambda w, n=name: self.choose(self.cur / n))
-            item.add_widget(IconLeftWidget(icon=icon))
+            item.add_widget(IconLeftWidget(icon=icon_name))
             self.items.add_widget(item)
         if not dirs and not files:
             self.items.add_widget(OneLineListItem(text="(Nothing Here)"))
@@ -820,9 +848,26 @@ class Picker(ModalView):
 class PersistApp(MDApp):
     title = "Persist"
 
-    # ---- build
+    # ---- build (errors are shown inside this same app)
     def build(self):
-        self._ui_ready = False
+        try:
+            return self.build_ui()
+        except Exception:
+            err = traceback.format_exc()
+            save_crash(err)
+            return self.error_view(err)
+
+    def error_view(self, err):
+        sv = ScrollView()
+        lb = Label(text=err, size_hint_y=None, font_size="12sp",
+                   halign="left", valign="top")
+        lb.bind(width=lambda *a: setattr(lb, "text_size", (lb.width, None)),
+                texture_size=lambda *a: setattr(lb, "height",
+                                                lb.texture_size[1]))
+        sv.add_widget(lb)
+        return sv
+
+    def build_ui(self):
         self.cfg = self.load_cfg()
         self.busy = False
         self.lines = []
@@ -830,14 +875,19 @@ class PersistApp(MDApp):
         self._sys_cb = None
         self._last_ui = 0.0
         self.cards, self.accent_labels, self.accent_icons = [], [], []
-        self.toggles, self.swatches = [], {}
+        self.swatches = {}
+        self.theme_cls.material_style = "M3"
         self.apply_theme(first=True)
-        self.sm = MDScreenManager(transition=FadeTransition(duration=0.22))
-        self.home = self.build_home()
-        self.settings = self.build_settings()
-        self.sm.add_widget(self.home)
-        self.sm.add_widget(self.settings)
-        self._ui_ready = True
+        try:
+            tr = MDFadeSlideTransition(duration=0.3)
+        except Exception:
+            tr = FadeTransition(duration=0.25)
+        self.sm = MDScreenManager(transition=tr)
+        self.home_scr = self.build_home()
+        self.settings_scr = self.build_settings()
+        self.sm.add_widget(self.home_scr)
+        self.sm.add_widget(self.settings_scr)
+        self.ready = True
         self.retheme()
         return self.sm
 
@@ -856,13 +906,24 @@ class PersistApp(MDApp):
             pass
         return cfg
 
-    def set_cfg(self, k, v):
-        self.cfg[k] = v
+    def save_cfg(self):
         try:
             self.cfg_path().write_text(json.dumps(self.cfg))
         except Exception:
             pass
+
+    def set_cfg(self, k, v):
+        self.cfg[k] = v
+        self.save_cfg()
         self.refresh_info()
+
+    def set_workers(self, v):
+        v = int(round(v))
+        if v != self.cfg.get("workers"):
+            self.cfg["workers"] = v
+            self.save_cfg()
+            n = os.cpu_count() or 2
+            self.cpu_lbl.text = "Using %d Of %d Cores" % (self.workers(), n)
 
     def workers(self):
         n = os.cpu_count() or 2
@@ -916,11 +977,11 @@ class PersistApp(MDApp):
                           else (0.1, 0.1, 0.12, 1))
 
     def retheme(self):
-        if not getattr(self, "_ui_ready", False):
+        if not getattr(self, "ready", False):
             return
         for c in self.cards:
             c.md_bg_color = self.card_bg()
-        for s in (self.home, self.settings):
+        for s in (self.home_scr, self.settings_scr):
             s.md_bg_color = self.screen_bg()
         for w in self.accent_labels + self.accent_icons:
             w.text_color = self.theme_cls.primary_color
@@ -941,18 +1002,29 @@ class PersistApp(MDApp):
         self.accent_labels.append(lb)
         return lb
 
-    def icon(self, name, size="30sp"):
+    def make_icon(self, name, size="30sp"):
         ic = MDIcon(icon=name, theme_text_color="Custom",
                     text_color=self.theme_cls.primary_color,
-                    pos_hint={"center_y": 0.5})
-        ic.font_size = size
+                    font_size=size, size_hint=(None, 1), width=dp(44),
+                    halign="center", valign="middle")
         self.accent_icons.append(ic)
         return ic
 
-    def action_card(self, icon, title, sub, cb):
+    def make_swatch(self, rgba, name):
+        cb = lambda w, n=name: self.set_palette(n)
+        for extra in ({"icon_size": "40sp"}, {"font_size": "40sp"}, {}):
+            try:
+                return MDIconButton(
+                    icon="checkbox-blank-circle", theme_text_color="Custom",
+                    text_color=rgba, on_release=cb, **extra)
+            except TypeError:
+                continue
+        return MDIconButton(icon="checkbox-blank-circle", on_release=cb)
+
+    def action_card(self, icon_name, title, sub, cb):
         card = self.make_card(orientation="horizontal", height=dp(92),
                               padding=dp(18), spacing=dp(14))
-        card.add_widget(self.icon(icon, "34sp"))
+        card.add_widget(self.make_icon(icon_name, "34sp"))
         box = MDBoxLayout(orientation="vertical", spacing=dp(2))
         box.add_widget(MDLabel(text=title, font_style="Subtitle1",
                                valign="bottom"))
@@ -961,7 +1033,8 @@ class PersistApp(MDApp):
         card.add_widget(box)
         card.add_widget(MDIcon(icon="chevron-right",
                                theme_text_color="Hint",
-                               pos_hint={"center_y": 0.5}))
+                               size_hint=(None, 1), width=dp(28),
+                               valign="middle"))
         make_tap(card, cb)
         return card
 
@@ -978,7 +1051,7 @@ class PersistApp(MDApp):
 
         db = self.make_card(orientation="horizontal", height=dp(88),
                             padding=dp(18), spacing=dp(14))
-        db.add_widget(self.icon("database-outline"))
+        db.add_widget(self.make_icon("database-outline"))
         box = MDBoxLayout(orientation="vertical", spacing=dp(2))
         box.add_widget(MDLabel(text="Database Folder", font_style="Caption",
                                theme_text_color="Secondary",
@@ -992,7 +1065,8 @@ class PersistApp(MDApp):
         box.add_widget(self.db_home_lbl)
         db.add_widget(box)
         db.add_widget(MDIcon(icon="pencil-outline", theme_text_color="Hint",
-                             pos_hint={"center_y": 0.5}))
+                             size_hint=(None, 1), width=dp(28),
+                             valign="middle"))
         make_tap(db, lambda: self.choose_folder(
             "db_dir", "Choose Database Folder"))
 
@@ -1051,17 +1125,16 @@ class PersistApp(MDApp):
         c.add_widget(row)
         c.add_widget(wlabel("Accent Color", font_style="Caption",
                             theme_text_color="Secondary"))
-        grid = GridLayout(cols=4, size_hint_y=None, row_default_height=dp(52),
-                          row_force_default=True, spacing=dp(6))
+        grid = GridLayout(cols=4, size_hint_y=None,
+                          row_default_height=dp(52), row_force_default=True,
+                          spacing=dp(6))
         grid.bind(minimum_height=grid.setter("height"))
         for name in PALETTES:
             try:
-                col_rgba = get_color_from_hex(MD_COLORS[name]["500"])
+                rgba = get_color_from_hex(MD_COLORS[name]["500"])
             except Exception:
                 continue
-            b = MDIconButton(icon="checkbox-blank-circle",
-                             theme_text_color="Custom", text_color=col_rgba,
-                             on_release=lambda w, n=name: self.set_palette(n))
+            b = self.make_swatch(rgba, name)
             self.swatches[name] = b
             grid.add_widget(b)
         c.add_widget(grid)
@@ -1076,7 +1149,7 @@ class PersistApp(MDApp):
         n = max(os.cpu_count() or 2, 2)
         sl = MDSlider(min=1, max=n, value=self.workers(), step=1,
                       size_hint_y=None, height=dp(44))
-        sl.bind(value=lambda i, v: self.set_cfg("workers", int(round(v))))
+        sl.bind(value=lambda i, v: self.set_workers(v))
         c.add_widget(sl)
         c.add_widget(wlabel("More Cores Is Faster But Warms The Phone.",
                             font_style="Caption",
@@ -1101,8 +1174,9 @@ class PersistApp(MDApp):
         row = MDBoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
         self.batt_icon = MDIcon(icon="check-circle", theme_text_color="Custom",
                                 text_color=(0.3, 0.78, 0.4, 1),
-                                pos_hint={"center_y": 0.5})
-        self.batt_icon.font_size = "30sp"
+                                font_size="30sp", size_hint=(None, 1),
+                                width=dp(40), halign="center",
+                                valign="middle")
         row.add_widget(self.batt_icon)
         self.batt_lbl = MDLabel(text="", font_style="Subtitle1",
                                 valign="middle")
@@ -1140,14 +1214,9 @@ class PersistApp(MDApp):
     def switch_row(self, text, key):
         row = MDBoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
         row.add_widget(MDLabel(text=text, valign="middle"))
-        sw = MDSwitch(pos_hint={"center_y": 0.5})
-        init_val = bool(self.cfg.get(key, True))
-
-        def _init_sw(dt):
-            sw.active = init_val
-            sw.bind(active=lambda inst, v: self.set_cfg(key, bool(v)))
-
-        Clock.schedule_once(_init_sw, 0)
+        sw = MDSwitch(active=bool(self.cfg.get(key, True)),
+                      size_hint=(None, None), pos_hint={"center_y": 0.5})
+        sw.bind(active=lambda inst, v: self.set_cfg(key, bool(v)))
         row.add_widget(sw)
         return row
 
@@ -1155,7 +1224,7 @@ class PersistApp(MDApp):
         self.sm.current = name
 
     def refresh_info(self):
-        if not getattr(self, "_ui_ready", False):
+        if not getattr(self, "ready", False):
             return
         c = self.cfg
         n = os.cpu_count() or 2
@@ -1207,6 +1276,8 @@ class PersistApp(MDApp):
 
     # ---- android lifecycle
     def on_start(self):
+        if not getattr(self, "ready", False):
+            return
         Clock.schedule_once(lambda dt: ask_access(), 1)
         set_hi_refresh()
         try:
@@ -1238,6 +1309,8 @@ class PersistApp(MDApp):
         return True
 
     def on_resume(self):
+        if not getattr(self, "ready", False):
+            return
         set_hi_refresh()
         if self.cfg.get("theme") == "auto":
             self.apply_theme()
@@ -1294,4 +1367,134 @@ class PersistApp(MDApp):
             p = None
         if p is None:
             Clock.schedule_once(lambda dt: self.set_status(
-                "Could Not Use That Location. Use The Built-
+                "Could Not Use That Location. Use The Built-In Browser."))
+        else:
+            Clock.schedule_once(lambda dt: cb(p))
+
+    # ---- dialogs
+    def battery_dialog(self):
+        dlg = None
+
+        def allow(*_):
+            request_battery_exemption()
+            dlg.dismiss()
+
+        def appset(*_):
+            open_app_settings()
+            dlg.dismiss()
+
+        dlg = MDDialog(
+            title="Keep Persist Running",
+            text=("Android Can Stop Persist When The Screen Is Off.\n\n"
+                  "1. Tap Allow Now And Choose Allow.\n"
+                  "2. Tap App Settings, Open Battery Saver And Pick "
+                  "No Restrictions.\n"
+                  "3. Turn On Autostart.\n"
+                  "4. Lock Persist In Recent Apps.\n\n"
+                  "This Popup Only Appears While The Restriction Is Active."),
+            buttons=[MDFlatButton(text="Later",
+                                  on_release=lambda *_: dlg.dismiss()),
+                     MDFlatButton(text="App Settings", on_release=appset),
+                     MDFlatButton(text="Allow Now", on_release=allow)])
+        dlg.open()
+
+    def choose_folder(self, key, title):
+        start = self.cfg.get(key) or ""
+        Picker("dir", Path(start) if start else ROOT, title,
+               lambda p: self.set_cfg(key, str(p))).open()
+
+    # ---- flows
+    def start_scan(self):
+        if self.busy:
+            self.set_status("A Job Is Already Running")
+            return
+
+        def go(db_dir):
+            Picker("dir", ROOT, "Pick The Folder To Scan",
+                   lambda p: self.run_job("Scan", do_scan, p, db_dir)).open()
+
+        cur = self.cfg.get("db_dir") or ""
+        if cur and Path(cur).is_dir():
+            go(Path(cur))
+            return
+
+        def picked(p):
+            self.set_cfg("db_dir", str(p))
+            go(p)
+        Picker("dir", ROOT, "Choose Where To Save Databases", picked).open()
+
+    def start_extract(self):
+        if self.busy:
+            self.set_status("A Job Is Already Running")
+            return
+
+        def got_zip(z):
+            dbd = self.cfg.get("db_dir")
+            start = Path(dbd) if dbd and Path(dbd).is_dir() else ROOT
+
+            def got_db(d):
+                self.pick_output(z, d)
+            Picker(".json", start, "Pick The Database", got_db).open()
+        Picker(".zip", ROOT, "Pick The Takeout Zip", got_zip).open()
+
+    def pick_output(self, z, d):
+        last = self.cfg.get("last_out") or ""
+        start = Path(last) if last and Path(last).is_dir() else ROOT
+
+        def got_out(o):
+            self.set_cfg("last_out", str(o))
+            self.confirm_extract(z, d, o)
+        Picker("dir", start, "Choose Output Folder For This Extraction",
+               got_out).open()
+
+    def confirm_extract(self, z, d, out):
+        dlg = None
+
+        def start(*_):
+            dlg.dismiss()
+            self.run_job("Extract", do_extract, z, d, out)
+
+        def change(*_):
+            dlg.dismiss()
+            self.pick_output(z, d)
+
+        dlg = MDDialog(
+            title="Start Extraction?",
+            text=("Zip: %s\nDatabase: %s\nOutput: %s\n\n"
+                  "Nothing Existing Is Overwritten." %
+                  (z.name, d.name, pretty(out))),
+            buttons=[MDFlatButton(text="Cancel",
+                                  on_release=lambda *_: dlg.dismiss()),
+                     MDFlatButton(text="Change Output", on_release=change),
+                     MDRaisedButton(text="Start", on_release=start)])
+        dlg.open()
+
+    def run_job(self, title, fn, *args):
+        if self.busy:
+            return
+        self.busy = True
+        self.lines = []
+        self.log_lbl.text = ""
+        self.hold_cpu(True)
+
+        def work():
+            lowprio()
+            ok, msg = True, ""
+            try:
+                msg = fn(self, *args)
+            except RuntimeError as e:
+                ok, msg = False, str(e)
+                self.log("ERROR: " + msg)
+            except Exception as e:
+                ok, msg = False, repr(e)
+                self.log("ERROR: " + traceback.format_exc()[-700:])
+            finally:
+                self.hold_cpu(False)
+                self.busy = False
+                self.set_status("Ready", 0)
+            if self.cfg.get("notify"):
+                notify("Persist - %s %s" %
+                       (title, "Finished" if ok else "Failed"), msg)
+            if self.cfg.get("vibrate"):
+                vibrate(ok)
+        threading.Thread(target=work, daemon=True).start()
